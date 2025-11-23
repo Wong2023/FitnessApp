@@ -1,5 +1,6 @@
 package com.example.fitnessapp1   // важно: совпадает с путём в проекте
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -9,9 +10,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.fitnessapp1.ui.theme.FitnessAPP1Theme
 import androidx.compose.material3.ExperimentalMaterial3Api
+import org.json.JSONArray
+import org.json.JSONObject
+
+// ----- модели -----
 
 data class Program(val id: String, val name: String)
 
@@ -35,17 +41,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // Тема теперь контролируется изнутри приложения
-            // darkMode состояние хранится в FitnessAppRoot
             FitnessAppRootHolder()
         }
     }
 }
 
-
+/**
+ * Holder keeps theme state and passes it into FitnessAppRoot.
+ * Theme is applied with FitnessAPP1Theme(darkTheme = darkMode).
+ */
 @Composable
 fun FitnessAppRootHolder() {
-    var darkMode by remember { mutableStateOf(false) } // начальная — светлая (можно заменить на isSystemInDarkTheme())
+    var darkMode by remember { mutableStateOf(false) }
     FitnessAPP1Theme(darkTheme = darkMode) {
         Surface(modifier = Modifier.fillMaxSize()) {
             FitnessAppRoot(darkMode = darkMode, onToggleDark = { darkMode = !darkMode })
@@ -53,33 +60,129 @@ fun FitnessAppRootHolder() {
     }
 }
 
-
-
+/**
+ * Core app UI + persistence (SharedPreferences).
+ * Only this file is changed — all data saved in prefs so it survives restarts.
+ */
 @Composable
 fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
+    val context = LocalContext.current
 
-    val programsState = remember {
-        mutableStateListOf(
-            Program("chest", "Chest day"),
-            Program("legs", "Leg day"),
-            Program("shoulders", "Shoulder day")
-        )
-    }
-
+    // Загрузка состояния из SharedPreferences при первом запуске/композиции
+    val (programsState, setProgramsState) = remember { mutableStateOf(mutableStateListOf<Program>()) }
     var nextProgramSuffix by remember { mutableStateOf(1) }
 
     var screen by remember { mutableStateOf<Screen>(Screen.ProgramList) }
 
-    // список упражнений в памяти
     var exercises by remember { mutableStateOf<List<Exercise>>(emptyList()) }
     var nextId by remember { mutableStateOf(1L) }
 
+    // --- Persistence helpers ---
+    fun saveAll() {
+        val prefs = context.getSharedPreferences("fitness_app_prefs", Context.MODE_PRIVATE)
+        // programs
+        val pArr = JSONArray()
+        for (p in programsState) {
+            val o = JSONObject()
+            o.put("id", p.id)
+            o.put("name", p.name)
+            pArr.put(o)
+        }
+        // exercises
+        val eArr = JSONArray()
+        for (e in exercises) {
+            val o = JSONObject()
+            o.put("id", e.id)
+            o.put("programId", e.programId)
+            o.put("title", e.title)
+            o.put("sets", e.sets)
+            o.put("reps", e.reps)
+            eArr.put(o)
+        }
+        // meta
+        val meta = JSONObject()
+        meta.put("nextId", nextId)
+        meta.put("nextProgramSuffix", nextProgramSuffix)
+
+        prefs.edit()
+            .putString("programs_json", pArr.toString())
+            .putString("exercises_json", eArr.toString())
+            .putString("meta_json", meta.toString())
+            .apply()
+    }
+
+    fun loadAll() {
+        val prefs = context.getSharedPreferences("fitness_app_prefs", Context.MODE_PRIVATE)
+        val pText = prefs.getString("programs_json", null)
+        val eText = prefs.getString("exercises_json", null)
+        val mText = prefs.getString("meta_json", null)
+
+        if (pText != null) {
+            try {
+                val arr = JSONArray(pText)
+                programsState.clear()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    programsState.add(Program(o.getString("id"), o.getString("name")))
+                }
+            } catch (_: Exception) { /* ignore parsing errors */ }
+        } else {
+            // default seed if nothing saved
+            programsState.clear()
+            programsState.addAll(
+                listOf(
+                    Program("chest", "Chest day"),
+                    Program("legs", "Leg day"),
+                    Program("shoulders", "Shoulder day")
+                )
+            )
+        }
+
+        if (eText != null) {
+            try {
+                val arr = JSONArray(eText)
+                val list = mutableListOf<Exercise>()
+                var maxId = 0L
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val ex = Exercise(
+                        id = o.getLong("id"),
+                        programId = o.getString("programId"),
+                        title = o.getString("title"),
+                        sets = o.getInt("sets"),
+                        reps = o.getInt("reps")
+                    )
+                    list += ex
+                    if (ex.id > maxId) maxId = ex.id
+                }
+                exercises = list
+                if (maxId >= nextId) nextId = maxId + 1
+            } catch (_: Exception) { /* ignore */ }
+        }
+
+        if (mText != null) {
+            try {
+                val meta = JSONObject(mText)
+                nextId = meta.optLong("nextId", nextId)
+                nextProgramSuffix = meta.optInt("nextProgramSuffix", nextProgramSuffix)
+            } catch (_: Exception) { /* ignore */ }
+        } else {
+            // if not present, compute reasonable nextId from exercises
+            val maxId = exercises.maxOfOrNull { it.id } ?: 0L
+            nextId = maxId + 1
+        }
+    }
+
+    // Load once when composition starts
+    LaunchedEffect(Unit) { loadAll() }
+
+    // --- Business logic functions (call saveAll after changes) ---
     fun addProgram(name: String): String? {
         val trimmed = name.trim()
         if (trimmed.isBlank()) return "Name required"
-        // уникальный id
         val id = "p${System.currentTimeMillis()}${nextProgramSuffix++}"
         programsState.add(Program(id, trimmed))
+        saveAll()
         return null
     }
 
@@ -89,6 +192,7 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
         val idx = programsState.indexOfFirst { it.id == id }
         if (idx != -1) {
             programsState[idx] = programsState[idx].copy(name = trimmed)
+            saveAll()
         }
         return null
     }
@@ -96,6 +200,7 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
     fun deleteProgram(id: String) {
         programsState.removeAll { it.id == id }
         exercises = exercises.filterNot { it.programId == id }
+        saveAll()
     }
 
     fun addExercise(programId: String, title: String, sets: Int, reps: Int): String? {
@@ -103,6 +208,7 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
         if (sets <= 0 || reps <= 0) return "Sets/Reps must be > 0"
         val e = Exercise(nextId++, programId, title.trim(), sets, reps)
         exercises = exercises + e
+        saveAll()
         return null
     }
 
@@ -113,19 +219,22 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
             if (it.id == id) it.copy(programId = programId, title = title.trim(), sets = sets, reps = reps)
             else it
         }
+        saveAll()
         return null
     }
 
     fun deleteExercise(id: Long) {
         exercises = exercises.filterNot { it.id == id }
+        saveAll()
     }
 
+    // --- UI navigation and screens ---
     when (val s = screen) {
         is Screen.ProgramList -> ProgramListScreen(
             programs = programsState,
             onOpen = { pid -> screen = Screen.ProgramDetail(pid) },
-            onAddProgram = { /* handled by dialog inside composable */ },
-            onEditProgram = { /* handled by dialog inside composable */ },
+            onAddProgram = { /* handled inside composable */ },
+            onEditProgram = { /* handled inside composable */ },
             onDeleteProgram = { id -> deleteProgram(id) },
             addProgramAction = { name -> addProgram(name) },
             editProgramAction = { id, name -> editProgram(id, name) },
@@ -189,7 +298,6 @@ fun ProgramListScreen(
             TopAppBar(
                 title = { Text("Choose workout day") },
                 actions = {
-                    // переключатель тёмной темы в AppBar
                     Row(Modifier.padding(end = 8.dp)) {
                         Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
                         Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
