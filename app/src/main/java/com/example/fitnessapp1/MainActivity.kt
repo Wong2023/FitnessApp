@@ -13,8 +13,6 @@ import androidx.compose.ui.unit.dp
 import com.example.fitnessapp1.ui.theme.FitnessAPP1Theme
 import androidx.compose.material3.ExperimentalMaterial3Api
 
-// ----- простые модели -----
-
 data class Program(val id: String, val name: String)
 
 data class Exercise(
@@ -37,20 +35,29 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            FitnessAPP1Theme {            // используем твою тему
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    FitnessAppRoot()
-                }
-            }
+            // Тема теперь контролируется изнутри приложения
+            // darkMode состояние хранится в FitnessAppRoot
+            FitnessAppRootHolder()
         }
     }
 }
 
-// ----- корневой composable со всей логикой -----
 
 @Composable
-fun FitnessAppRoot() {
-    // programs - теперь изменяемый список, можно добавлять/редактировать/удалять
+fun FitnessAppRootHolder() {
+    var darkMode by remember { mutableStateOf(false) } // начальная — светлая (можно заменить на isSystemInDarkTheme())
+    FitnessAPP1Theme(darkTheme = darkMode) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            FitnessAppRoot(darkMode = darkMode, onToggleDark = { darkMode = !darkMode })
+        }
+    }
+}
+
+
+
+@Composable
+fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
+
     val programsState = remember {
         mutableStateListOf(
             Program("chest", "Chest day"),
@@ -58,7 +65,7 @@ fun FitnessAppRoot() {
             Program("shoulders", "Shoulder day")
         )
     }
-    // generator для id программ (простая инкрементация)
+
     var nextProgramSuffix by remember { mutableStateOf(1) }
 
     var screen by remember { mutableStateOf<Screen>(Screen.ProgramList) }
@@ -88,7 +95,6 @@ fun FitnessAppRoot() {
 
     fun deleteProgram(id: String) {
         programsState.removeAll { it.id == id }
-        // удалить все упражнения этой программы
         exercises = exercises.filterNot { it.programId == id }
     }
 
@@ -118,11 +124,13 @@ fun FitnessAppRoot() {
         is Screen.ProgramList -> ProgramListScreen(
             programs = programsState,
             onOpen = { pid -> screen = Screen.ProgramDetail(pid) },
-            onAddProgram = { screen = Screen.ProgramList }, // handled inside composable via dialog
-            onEditProgram = { id -> /* handled via dialog in composable */ },
+            onAddProgram = { /* handled by dialog inside composable */ },
+            onEditProgram = { /* handled by dialog inside composable */ },
             onDeleteProgram = { id -> deleteProgram(id) },
             addProgramAction = { name -> addProgram(name) },
-            editProgramAction = { id, name -> editProgram(id, name) }
+            editProgramAction = { id, name -> editProgram(id, name) },
+            darkMode = darkMode,
+            onToggleDark = onToggleDark
         )
 
         is Screen.ProgramDetail -> ProgramDetailScreen(
@@ -132,7 +140,9 @@ fun FitnessAppRoot() {
             onBack = { screen = Screen.ProgramList },
             onAdd = { screen = Screen.EditExercise(s.programId, null) },
             onEdit = { exId -> screen = Screen.EditExercise(s.programId, exId) },
-            onDelete = { id -> deleteExercise(id) }
+            onDelete = { id -> deleteExercise(id) },
+            darkMode = darkMode,
+            onToggleDark = onToggleDark
         )
 
         is Screen.EditExercise -> EditExerciseScreen(
@@ -146,12 +156,14 @@ fun FitnessAppRoot() {
                 if (err == null) screen = Screen.ProgramDetail(s.programId)
                 err
             },
-            onCancel = { screen = Screen.ProgramDetail(s.programId) }
+            onCancel = { screen = Screen.ProgramDetail(s.programId) },
+            darkMode = darkMode,
+            onToggleDark = onToggleDark
         )
     }
 }
 
-// ----- экраны -----
+// ----- screens -----
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -163,7 +175,9 @@ fun ProgramListScreen(
     onEditProgram: (String) -> Unit,
     onDeleteProgram: (String) -> Unit,
     addProgramAction: (String) -> String?,
-    editProgramAction: (String, String) -> String?
+    editProgramAction: (String, String) -> String?,
+    darkMode: Boolean,
+    onToggleDark: () -> Unit
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf<Pair<Boolean, String?>>(false to null) } // Pair(show, id)
@@ -171,7 +185,18 @@ fun ProgramListScreen(
     var errorText by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Choose workout day") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Choose workout day") },
+                actions = {
+                    // переключатель тёмной темы в AppBar
+                    Row(Modifier.padding(end = 8.dp)) {
+                        Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
+                        Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = { showAddDialog = true }) { Text("+") }
         }
@@ -280,7 +305,9 @@ fun ProgramDetailScreen(
     onBack: () -> Unit,
     onAdd: () -> Unit,
     onEdit: (Long) -> Unit,
-    onDelete: (Long) -> Unit
+    onDelete: (Long) -> Unit,
+    darkMode: Boolean,
+    onToggleDark: () -> Unit
 ) {
     val programName = programs.firstOrNull { it.id == programId }?.name ?: "Program"
 
@@ -290,6 +317,12 @@ fun ProgramDetailScreen(
                 title = { Text(programName) },
                 navigationIcon = {
                     TextButton(onClick = onBack) { Text("Back") }
+                },
+                actions = {
+                    Row(Modifier.padding(end = 8.dp)) {
+                        Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
+                        Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
+                    }
                 }
             )
         },
@@ -350,7 +383,9 @@ fun EditExerciseScreen(
     programId: String,
     existing: Exercise?,
     onSave: (title: String, sets: Int, reps: Int, id: Long?) -> String?,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    darkMode: Boolean,
+    onToggleDark: () -> Unit
 ) {
     var title by remember { mutableStateOf(existing?.title ?: "") }
     var setsText by remember { mutableStateOf(existing?.sets?.toString() ?: "3") }
@@ -363,6 +398,12 @@ fun EditExerciseScreen(
                 title = { Text(if (existing == null) "Add exercise" else "Edit exercise") },
                 navigationIcon = {
                     TextButton(onClick = onCancel) { Text("Back") }
+                },
+                actions = {
+                    Row(Modifier.padding(end = 8.dp)) {
+                        Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
+                        Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
+                    }
                 }
             )
         }
@@ -406,13 +447,14 @@ fun EditExerciseScreen(
                 val err = onSave(title, sets, reps, existing?.id)
                 if (err != null) {
                     error = err
-                } // если err == null, навигация выполняется в вызывающем коде
+                }
             }) {
                 Text("Save")
             }
         }
     }
 }
+
 
 
 
