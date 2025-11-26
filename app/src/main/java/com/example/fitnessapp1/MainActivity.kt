@@ -1,4 +1,4 @@
-package com.example.fitnessapp1   // важно: совпадает с путём в проекте
+package com.example.fitnessapp1 // important: matches the path in the project
 
 import android.content.Context
 import android.os.Bundle
@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -17,7 +18,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import org.json.JSONArray
 import org.json.JSONObject
 
-// ----- модели -----
+// ----- models -----
 
 data class Program(val id: String, val name: String)
 
@@ -26,7 +27,8 @@ data class Exercise(
     val programId: String,
     val title: String,
     val sets: Int,
-    val reps: Int
+    val reps: Int,
+    val completedSets: List<Boolean> = emptyList()
 )
 
 sealed class Screen {
@@ -68,7 +70,7 @@ fun FitnessAppRootHolder() {
 fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
     val context = LocalContext.current
 
-    // Загрузка состояния из SharedPreferences при первом запуске/композиции
+    // Loading state from SharedPreferences on first launch/composition
     val (programsState, setProgramsState) = remember { mutableStateOf(mutableStateListOf<Program>()) }
     var nextProgramSuffix by remember { mutableStateOf(1) }
 
@@ -97,6 +99,9 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
             o.put("title", e.title)
             o.put("sets", e.sets)
             o.put("reps", e.reps)
+            val setsDoneArr = JSONArray()
+            e.completedSets.forEach { setsDoneArr.put(it) }
+            o.put("completedSets", setsDoneArr)
             eArr.put(o)
         }
         // meta
@@ -125,7 +130,8 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
                     val o = arr.getJSONObject(i)
                     programsState.add(Program(o.getString("id"), o.getString("name")))
                 }
-            } catch (_: Exception) { /* ignore parsing errors */ }
+            } catch (_: Exception) { /* ignore parsing errors */
+            }
         } else {
             // default seed if nothing saved
             programsState.clear()
@@ -145,19 +151,28 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
                 var maxId = 0L
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
+                    val sets = o.getInt("sets")
+                    val completedSetsJson = o.optJSONArray("completedSets")
+                    val completedSets = if (completedSetsJson != null) {
+                        (0 until completedSetsJson.length()).map { completedSetsJson.getBoolean(it) }
+                    } else {
+                        List(sets) { false }
+                    }
                     val ex = Exercise(
                         id = o.getLong("id"),
                         programId = o.getString("programId"),
                         title = o.getString("title"),
-                        sets = o.getInt("sets"),
-                        reps = o.getInt("reps")
+                        sets = sets,
+                        reps = o.getInt("reps"),
+                        completedSets = completedSets
                     )
                     list += ex
                     if (ex.id > maxId) maxId = ex.id
                 }
                 exercises = list
                 if (maxId >= nextId) nextId = maxId + 1
-            } catch (_: Exception) { /* ignore */ }
+            } catch (_: Exception) { /* ignore */
+            }
         }
 
         if (mText != null) {
@@ -165,7 +180,8 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
                 val meta = JSONObject(mText)
                 nextId = meta.optLong("nextId", nextId)
                 nextProgramSuffix = meta.optInt("nextProgramSuffix", nextProgramSuffix)
-            } catch (_: Exception) { /* ignore */ }
+            } catch (_: Exception) { /* ignore */
+            }
         } else {
             // if not present, compute reasonable nextId from exercises
             val maxId = exercises.maxOfOrNull { it.id } ?: 0L
@@ -206,7 +222,7 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
     fun addExercise(programId: String, title: String, sets: Int, reps: Int): String? {
         if (title.isBlank()) return "Title is required"
         if (sets <= 0 || reps <= 0) return "Sets/Reps must be > 0"
-        val e = Exercise(nextId++, programId, title.trim(), sets, reps)
+        val e = Exercise(nextId++, programId, title.trim(), sets, reps, List(sets) { false })
         exercises = exercises + e
         saveAll()
         return null
@@ -216,8 +232,20 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
         if (title.isBlank()) return "Title is required"
         if (sets <= 0 || reps <= 0) return "Sets/Reps must be > 0"
         exercises = exercises.map {
-            if (it.id == id) it.copy(programId = programId, title = title.trim(), sets = sets, reps = reps)
-            else it
+            if (it.id == id) {
+                val newCompletedSets = if (it.sets != sets) {
+                    List(sets) { false }
+                } else {
+                    it.completedSets
+                }
+                it.copy(
+                    programId = programId,
+                    title = title.trim(),
+                    sets = sets,
+                    reps = reps,
+                    completedSets = newCompletedSets
+                )
+            } else it
         }
         saveAll()
         return null
@@ -225,6 +253,32 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
 
     fun deleteExercise(id: Long) {
         exercises = exercises.filterNot { it.id == id }
+        saveAll()
+    }
+
+    fun toggleSetCompleted(exerciseId: Long, setIndex: Int) {
+        exercises = exercises.map { exercise ->
+            if (exercise.id == exerciseId) {
+                val updatedSets = exercise.completedSets.toMutableList()
+                if (setIndex < updatedSets.size) {
+                    updatedSets[setIndex] = !updatedSets[setIndex]
+                }
+                exercise.copy(completedSets = updatedSets)
+            } else {
+                exercise
+            }
+        }
+        saveAll()
+    }
+
+    fun resetExerciseProgress(exerciseId: Long) {
+        exercises = exercises.map { exercise ->
+            if (exercise.id == exerciseId) {
+                exercise.copy(completedSets = List(exercise.sets) { false })
+            } else {
+                exercise
+            }
+        }
         saveAll()
     }
 
@@ -250,6 +304,8 @@ fun FitnessAppRoot(darkMode: Boolean, onToggleDark: () -> Unit) {
             onAdd = { screen = Screen.EditExercise(s.programId, null) },
             onEdit = { exId -> screen = Screen.EditExercise(s.programId, exId) },
             onDelete = { id -> deleteExercise(id) },
+            onToggleSetCompleted = { exerciseId, setIndex -> toggleSetCompleted(exerciseId, setIndex) },
+            onResetExercise = { exerciseId -> resetExerciseProgress(exerciseId) },
             darkMode = darkMode,
             onToggleDark = onToggleDark
         )
@@ -298,7 +354,7 @@ fun ProgramListScreen(
             TopAppBar(
                 title = { Text("Choose workout day") },
                 actions = {
-                    Row(Modifier.padding(end = 8.dp)) {
+                    Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
                         Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
                     }
@@ -321,14 +377,18 @@ fun ProgramListScreen(
                         .fillMaxWidth()
                         .padding(vertical = 6.dp)
                 ) {
-                    Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Column(modifier = Modifier
                             .weight(1f)
                             .clickable { onOpen(p.id) }) {
                             Text(p.name, style = MaterialTheme.typography.titleLarge)
                             Text("Tap to view exercises")
                         }
-                        Row {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = {
                                 inputText = p.name
                                 errorText = null
@@ -365,7 +425,12 @@ fun ProgramListScreen(
             title = { Text("Add workout day") },
             text = {
                 Column {
-                    OutlinedTextField(value = inputText, onValueChange = { inputText = it }, label = { Text("Day name") }, singleLine = true)
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        label = { Text("Day name") },
+                        singleLine = true
+                    )
                     errorText?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             }
@@ -390,12 +455,19 @@ fun ProgramListScreen(
                 }) { Text("Save") }
             },
             dismissButton = {
-                TextButton(onClick = { showEditDialog = false to null; inputText = ""; errorText = null }) { Text("Cancel") }
+                TextButton(onClick = {
+                    showEditDialog = false to null; inputText = ""; errorText = null
+                }) { Text("Cancel") }
             },
             title = { Text("Edit workout day") },
             text = {
                 Column {
-                    OutlinedTextField(value = inputText, onValueChange = { inputText = it }, label = { Text("Day name") }, singleLine = true)
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        label = { Text("Day name") },
+                        singleLine = true
+                    )
                     errorText?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             }
@@ -414,6 +486,8 @@ fun ProgramDetailScreen(
     onAdd: () -> Unit,
     onEdit: (Long) -> Unit,
     onDelete: (Long) -> Unit,
+    onToggleSetCompleted: (exerciseId: Long, setIndex: Int) -> Unit,
+    onResetExercise: (exerciseId: Long) -> Unit,
     darkMode: Boolean,
     onToggleDark: () -> Unit
 ) {
@@ -427,7 +501,7 @@ fun ProgramDetailScreen(
                     TextButton(onClick = onBack) { Text("Back") }
                 },
                 actions = {
-                    Row(Modifier.padding(end = 8.dp)) {
+                    Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
                         Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
                     }
@@ -453,29 +527,56 @@ fun ProgramDetailScreen(
             ) {
                 items(exercises.size) { i ->
                     val e = exercises[i]
+                    var isExpanded by remember { mutableStateOf(false) }
+
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 6.dp)
                     ) {
-                        Row(
-                            Modifier
-                                .padding(16.dp)
-                                .fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        Column(
+                            Modifier.padding(16.dp)
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { onEdit(e.id) }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(e.title, style = MaterialTheme.typography.titleLarge)
-                                Text("${e.sets} sets × ${e.reps} reps")
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { isExpanded = !isExpanded }
+                                ) {
+                                    Text(e.title, style = MaterialTheme.typography.titleLarge)
+                                    Text("${e.sets} sets × ${e.reps} reps")
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TextButton(onClick = { onEdit(e.id) }) { Text("Edit") }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    TextButton(onClick = { onDelete(e.id) }) { Text("Delete") }
+                                }
                             }
-                            Row {
-                                TextButton(onClick = { onEdit(e.id) }) { Text("Edit") }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                TextButton(onClick = { onDelete(e.id) }) { Text("Delete") }
+
+                            if (isExpanded) {
+                                Spacer(Modifier.height(16.dp))
+                                Column {
+                                    e.completedSets.forEachIndexed { index, isCompleted ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Checkbox(
+                                                checked = isCompleted,
+                                                onCheckedChange = { onToggleSetCompleted(e.id, index) }
+                                            )
+                                            Text(text = "Set ${index + 1}")
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { onResetExercise(e.id) }) {
+                                    Text("Reset Progress")
+                                }
                             }
                         }
                     }
@@ -508,7 +609,7 @@ fun EditExerciseScreen(
                     TextButton(onClick = onCancel) { Text("Back") }
                 },
                 actions = {
-                    Row(Modifier.padding(end = 8.dp)) {
+                    Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (darkMode) "Dark" else "Light", modifier = Modifier.padding(end = 8.dp))
                         Switch(checked = darkMode, onCheckedChange = { onToggleDark() })
                     }
@@ -562,8 +663,3 @@ fun EditExerciseScreen(
         }
     }
 }
-
-
-
-
-
